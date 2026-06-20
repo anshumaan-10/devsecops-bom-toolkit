@@ -254,12 +254,9 @@ jobs:
       - name: Inventory AI/ML Python dependencies
         run: |
           if [ -f requirements.txt ]; then
-            grep -Ei "openai|anthropic|langchain|llama|huggingface|transformers|\
-torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb|garak|promptfoo" \
-              requirements.txt > output/aibom/ai-python-deps.txt 2>/dev/null || true
+            grep -Ei 'openai|anthropic|langchain|llama|huggingface|transformers|torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb|garak|promptfoo' requirements.txt > output/aibom/ai-python-deps.txt 2>/dev/null || true
           fi
-          echo '{"scan":"complete","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' \
-            > output/aibom/aibom-scan-summary.json
+          echo '{"scan":"complete"}' > output/aibom/aibom-scan-summary.json
 
       - name: Upload AIBOM artifacts
         uses: actions/upload-artifact@v4
@@ -281,12 +278,7 @@ torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb|garak|promptfoo" \
 
       - name: Discover SaaS API references in source
         run: |
-          grep -rE "salesforce\.com|slack\.com/api|api\.github\.com|googleapis\.com|\
-api\.stripe\.com|api\.sendgrid\.com|api\.twilio\.com|api\.hubspot\.com|\
-api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" \
-            --include="*.{js,ts,py,go,java,rb,yaml,yml,json,tf}" \
-            -l . 2>/dev/null > output/saasbom/saas-references.txt || \
-          echo "(no SaaS API references found)" > output/saasbom/saas-references.txt
+          grep -rEl "salesforce\.com|slack\.com|googleapis\.com|api\.stripe\.com|api\.sendgrid\.com|api\.twilio\.com|api\.hubspot\.com|api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" --include="*.js" --include="*.ts" --include="*.py" --include="*.go" --include="*.java" --include="*.yaml" --include="*.json" --include="*.tf" . 2>/dev/null > output/saasbom/saas-references.txt || echo "(no SaaS API references found)" > output/saasbom/saas-references.txt
 
       - name: Scan for exposed SaaS tokens (detect-secrets)
         run: |
@@ -382,9 +374,7 @@ api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" \
 
       - name: Generate infrastructure inventory summary
         run: |
-          echo '{"bomFormat":"CycloneDX","specVersion":"1.6",' \
-               '"metadata":{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"},' \
-               '"components":[]}' > output/ibom/ibom-template.json
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' > output/ibom/ibom-template.json
 
       - name: Upload IBOM artifacts
         uses: actions/upload-artifact@v4
@@ -410,25 +400,14 @@ api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" \
         run: |
           echo "## DevSecOps BOM Toolkit — Generation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| # | BOM Type | Files Generated |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|----------|-----------------|" >> $GITHUB_STEP_SUMMARY
-          declare -A LABELS=(
-            [sbom]="1. SBOM — Software"
-            [pbom]="2. PBOM — Pipeline"
-            [cbom]="3. CBOM — Cryptography"
-            [hbom]="4. HBOM — Hardware"
-            [mbom]="5. MBOM — ML"
-            [aibom]="6. AIBOM — AI"
-            [saasbom]="7. SaaSBOM — SaaS"
-            [obom]="8. OBOM — Operations"
-            [ibom]="9. IBOM — Infrastructure"
-          )
+          echo "| BOM | Description | Files |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------------|-------|" >> $GITHUB_STEP_SUMMARY
           for bom in sbom pbom cbom hbom mbom aibom saasbom obom ibom; do
             count=$(find "all-bom-outputs/${bom}-outputs" -type f 2>/dev/null | wc -l | tr -d ' ')
-            echo "| ${bom^^} | ${LABELS[$bom]} | ${count} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ${bom} | BOM type | ${count} |" >> $GITHUB_STEP_SUMMARY
           done
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> *Complete visibility. Stronger security. Resilient delivery.*" >> $GITHUB_STEP_SUMMARY
+          echo "> Complete visibility. Stronger security. Resilient delivery." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload consolidated BOM archive
         uses: actions/upload-artifact@v4
