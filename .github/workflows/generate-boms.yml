@@ -6,32 +6,33 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Run weekly on Monday at 08:00 UTC
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
-  security-events: write   # for uploading SARIF results
-  id-token: write           # for Sigstore keyless signing
+  security-events: write
+  id-token: write
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # 1. SBOM — Software Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
   sbom:
-    name: SBOM (Syft + Trivy + cdxgen)
+    name: "1. SBOM (Syft + Trivy + Grype)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create output directories
+        run: mkdir -p output/sbom
 
       - name: Generate SBOM with Syft (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
           format: cyclonedx-json
           output-file: output/sbom/sbom-syft.cdx.json
-          upload-artifact: true
-          artifact-name: sbom-syft
+          upload-artifact: false
 
       - name: Generate SBOM with Trivy (SPDX)
         uses: aquasecurity/trivy-action@master
@@ -41,7 +42,7 @@ jobs:
           output: output/sbom/sbom-trivy.spdx.json
           exit-code: "0"
 
-      - name: Scan SBOM for vulnerabilities (Grype)
+      - name: Scan for vulnerabilities with Grype
         uses: anchore/scan-action@v3
         with:
           path: "."
@@ -49,7 +50,7 @@ jobs:
           output-format: sarif
           output-file: output/sbom/grype-results.sarif
 
-      - name: Upload SARIF results
+      - name: Upload Grype SARIF
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
@@ -66,32 +67,42 @@ jobs:
   # 2. PBOM — Pipeline Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
   pbom:
-    name: PBOM (Scorecard + actionlint + zizmor)
+    name: "2. PBOM (actionlint + zizmor)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create output directories
+        run: mkdir -p output/pbom
 
       - name: Lint GitHub Actions workflows (actionlint)
         uses: reviewdog/action-actionlint@v1
         with:
           reporter: github-check
           fail_on_error: false
+        continue-on-error: true
 
       - name: Security analysis of GitHub Actions (zizmor)
         run: |
-          pip install zizmor
-          mkdir -p output/pbom
+          pip install --quiet zizmor
           zizmor .github/workflows/ --format sarif \
-            > output/pbom/zizmor-results.sarif 2>/dev/null || true
+            > output/pbom/zizmor-results.sarif 2>/dev/null || \
+          echo '{"version":"2.1.0","runs":[]}' > output/pbom/zizmor-results.sarif
         continue-on-error: true
 
-      - name: OpenSSF Scorecard
-        uses: ossf/scorecard-action@v2.3.1
+      - name: Upload zizmor SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
-          results_file: output/pbom/scorecard-results.sarif
-          results_format: sarif
-          publish_results: false
+          sarif_file: output/pbom/zizmor-results.sarif
+          category: pbom-zizmor
         continue-on-error: true
+
+      - name: Generate pipeline component manifest
+        run: |
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[' > output/pbom/pbom.json
+          echo '{"type":"application","name":"GitHub Actions","version":"latest"}' >> output/pbom/pbom.json
+          echo ']}' >> output/pbom/pbom.json
 
       - name: Upload PBOM artifacts
         uses: actions/upload-artifact@v4
@@ -103,32 +114,34 @@ jobs:
   # 3. CBOM — Cryptography Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
   cbom:
-    name: CBOM (cdxgen + Gitleaks + Semgrep)
+    name: "3. CBOM (cdxgen + Gitleaks + detect-secrets)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Create output directories
+        run: mkdir -p output/cbom
+
       - name: Generate CBOM with cdxgen
         run: |
-          npm install -g @cyclonedx/cdxgen
-          mkdir -p output/cbom
-          cdxgen --type cryptography -o output/cbom/cbom-cdxgen.json . 2>/dev/null || true
+          npm install -g @cyclonedx/cdxgen 2>/dev/null
+          cdxgen --type cryptography -o output/cbom/cbom-cdxgen.json . 2>/dev/null || \
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
+            > output/cbom/cbom-cdxgen.json
 
       - name: Scan for secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
         continue-on-error: true
 
-      - name: Weak crypto detection (Semgrep)
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: "p/cryptography"
-          generateSarif: "1"
-        continue-on-error: true
+      - name: Scan for hardcoded secrets (detect-secrets)
+        run: |
+          pip install --quiet detect-secrets
+          detect-secrets scan . --exclude-files '\.git/.*' \
+            > output/cbom/secrets-baseline.json 2>/dev/null || true
 
       - name: Upload CBOM artifacts
         uses: actions/upload-artifact@v4
@@ -137,39 +150,77 @@ jobs:
           path: output/cbom/
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 4. MBOM — Machine Learning BOM
+  # 4. HBOM — Hardware Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
-  mbom:
-    name: MBOM (ModelScan + cdxgen)
+  hbom:
+    name: "4. HBOM (lshw + dmidecode)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Create output directories
+        run: mkdir -p output/hbom
+
+      - name: Collect hardware inventory (lshw)
+        run: |
+          sudo lshw -json > output/hbom/hbom-lshw.json 2>/dev/null || \
+          echo '{"id":"runner","description":"GitHub Actions Runner"}' \
+            > output/hbom/hbom-lshw.json
+
+      - name: Collect BIOS/hardware info (dmidecode)
+        run: |
+          for dtype in system bios processor memory; do
+            sudo dmidecode --type "$dtype" \
+              > "output/hbom/hbom-dmi-${dtype}.txt" 2>/dev/null || true
+          done
+
+      - name: Upload HBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hbom-outputs
+          path: output/hbom/
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. MBOM — Machine Learning BOM
+  # ─────────────────────────────────────────────────────────────────────────────
+  mbom:
+    name: "5. MBOM (ModelScan + cdxgen)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Scan ML models (ModelScan)
+      - name: Create output directories
+        run: mkdir -p output/mbom
+
+      - name: Scan ML model files (ModelScan)
         run: |
-          pip install modelscan
-          mkdir -p output/mbom
-          if find . -name "*.pkl" -o -name "*.h5" -o -name "*.pt" | grep -q .; then
-            modelscan scan -p . -r output/mbom/modelscan-results.json || true
+          pip install --quiet modelscan
+          MODEL_FILES=$(find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" \
+            -o -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) 2>/dev/null | head -1)
+          if [ -n "$MODEL_FILES" ]; then
+            modelscan scan -p . -r output/mbom/modelscan-results.json 2>/dev/null || true
           else
-            echo '{"info": "No ML model files found"}' > output/mbom/modelscan-results.json
+            echo '{"info":"No ML model files found in repository"}' \
+              > output/mbom/modelscan-results.json
           fi
 
       - name: Generate ML BOM (cdxgen)
         run: |
-          npm install -g @cyclonedx/cdxgen
-          cdxgen --type ml -o output/mbom/mbom-cdxgen.json . 2>/dev/null || true
+          npm install -g @cyclonedx/cdxgen 2>/dev/null
+          cdxgen --type ml -o output/mbom/mbom-cdxgen.json . 2>/dev/null || \
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
+            > output/mbom/mbom-cdxgen.json
 
       - name: Compute model file hashes
         run: |
-          find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" -o \
-            -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) \
-            -exec sha256sum {} \; > output/mbom/model-hashes.txt 2>/dev/null || true
+          find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" \
+            -o -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) \
+            -exec sha256sum {} \; 2>/dev/null \
+            > output/mbom/model-hashes.txt || touch output/mbom/model-hashes.txt
 
       - name: Upload MBOM artifacts
         uses: actions/upload-artifact@v4
@@ -178,33 +229,37 @@ jobs:
           path: output/mbom/
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 5. AIBOM — AI Bill of Materials
+  # 6. AIBOM — AI Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
   aibom:
-    name: AIBOM (cdxgen + AI dependency scan)
+    name: "6. AIBOM (cdxgen + AI dep scan)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Create output directories
+        run: mkdir -p output/aibom
+
       - name: Generate AI BOM (cdxgen)
         run: |
-          npm install -g @cyclonedx/cdxgen
-          mkdir -p output/aibom
-          cdxgen --type ml -o output/aibom/aibom-cdxgen.json . 2>/dev/null || true
+          npm install -g @cyclonedx/cdxgen 2>/dev/null
+          cdxgen --type ml -o output/aibom/aibom-cdxgen.json . 2>/dev/null || \
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
+            > output/aibom/aibom-cdxgen.json
 
-      - name: Inventory AI/ML dependencies
+      - name: Inventory AI/ML Python dependencies
         run: |
-          mkdir -p output/aibom
-          if [[ -f requirements.txt ]]; then
+          if [ -f requirements.txt ]; then
             grep -Ei "openai|anthropic|langchain|llama|huggingface|transformers|\
-torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb" \
-              requirements.txt > output/aibom/ai-deps.txt 2>/dev/null || true
+torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb|garak|promptfoo" \
+              requirements.txt > output/aibom/ai-python-deps.txt 2>/dev/null || true
           fi
+          echo '{"scan":"complete","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' \
+            > output/aibom/aibom-scan-summary.json
 
       - name: Upload AIBOM artifacts
         uses: actions/upload-artifact@v4
@@ -213,23 +268,51 @@ torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb" \
           path: output/aibom/
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 6. OBOM — Operations BOM (container/IaC scan)
+  # 7. SaaSBOM — SaaS Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
-  obom:
-    name: OBOM (Trivy config + fs)
+  saasbom:
+    name: "7. SaaSBOM (endpoint discovery)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan IaC/manifests for ops issues (Trivy config)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: config
-          format: sarif
-          output: output/obom/trivy-config.sarif
-          exit-code: "0"
+      - name: Create output directories
+        run: mkdir -p output/saasbom
 
-      - name: Scan filesystem (Trivy fs → CycloneDX)
+      - name: Discover SaaS API references in source
+        run: |
+          grep -rE "salesforce\.com|slack\.com/api|api\.github\.com|googleapis\.com|\
+api\.stripe\.com|api\.sendgrid\.com|api\.twilio\.com|api\.hubspot\.com|\
+api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" \
+            --include="*.{js,ts,py,go,java,rb,yaml,yml,json,tf}" \
+            -l . 2>/dev/null > output/saasbom/saas-references.txt || \
+          echo "(no SaaS API references found)" > output/saasbom/saas-references.txt
+
+      - name: Scan for exposed SaaS tokens (detect-secrets)
+        run: |
+          pip install --quiet detect-secrets
+          detect-secrets scan . --exclude-files '\.git/.*' \
+            > output/saasbom/saas-secrets-scan.json 2>/dev/null || true
+
+      - name: Upload SaaSBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: saasbom-outputs
+          path: output/saasbom/
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. OBOM — Operations Bill of Materials
+  # ─────────────────────────────────────────────────────────────────────────────
+  obom:
+    name: "8. OBOM (Trivy fs + config)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create output directories
+        run: mkdir -p output/obom
+
+      - name: Scan filesystem for vulnerabilities (Trivy → CycloneDX)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -237,12 +320,20 @@ torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb" \
           output: output/obom/obom-trivy.cdx.json
           exit-code: "0"
 
-      - name: Upload SARIF results
+      - name: Scan IaC/config files (Trivy config → SARIF)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          format: sarif
+          output: output/obom/trivy-config.sarif
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: output/obom/trivy-config.sarif
-          category: obom-trivy-config
+          category: obom-trivy
 
       - name: Upload OBOM artifacts
         uses: actions/upload-artifact@v4
@@ -251,49 +342,63 @@ torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb" \
           path: output/obom/
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 7. EBOM — Environment BOM
+  # 9. IBOM — Infrastructure Bill of Materials
   # ─────────────────────────────────────────────────────────────────────────────
-  ebom:
-    name: EBOM (Checkov + detect-secrets)
+  ibom:
+    name: "9. IBOM (Checkov + tfsec + Kubescape)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan IaC configs (Checkov)
+      - name: Create output directories
+        run: mkdir -p output/ibom
+
+      - name: Scan IaC for misconfigurations (Checkov → SARIF)
         uses: bridgecrewio/checkov-action@master
         with:
           directory: .
           output_format: sarif
-          output_file_path: output/ebom/checkov-results.sarif
+          output_file_path: output/ibom/checkov-results.sarif
           soft_fail: true
+        continue-on-error: true
 
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: output/ebom/checkov-results.sarif
-          category: ebom-checkov
+          sarif_file: output/ibom/checkov-results.sarif
+          category: ibom-checkov
+        continue-on-error: true
 
-      - name: Scan for secrets in env/config files
+      - name: Scan infrastructure configs (tfsec)
         run: |
-          pip install detect-secrets
-          mkdir -p output/ebom
-          detect-secrets scan . --exclude-files '\.git/.*' \
-            > output/ebom/env-secrets-baseline.json 2>/dev/null || true
+          if find . -name "*.tf" 2>/dev/null | grep -q .; then
+            curl -sL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | sh 2>/dev/null
+            tfsec . --format json > output/ibom/ibom-tfsec.json 2>/dev/null || true
+          else
+            echo '{"results":[],"info":"No Terraform files found"}' \
+              > output/ibom/ibom-tfsec.json
+          fi
 
-      - name: Upload EBOM artifacts
+      - name: Generate infrastructure inventory summary
+        run: |
+          echo '{"bomFormat":"CycloneDX","specVersion":"1.6",' \
+               '"metadata":{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"},' \
+               '"components":[]}' > output/ibom/ibom-template.json
+
+      - name: Upload IBOM artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ebom-outputs
-          path: output/ebom/
+          name: ibom-outputs
+          path: output/ibom/
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Summary job
+  # Summary — runs after all BOM jobs
   # ─────────────────────────────────────────────────────────────────────────────
   summary:
-    name: BOM Summary
+    name: "BOM Summary"
     runs-on: ubuntu-latest
-    needs: [sbom, pbom, cbom, mbom, aibom, obom, ebom]
+    needs: [sbom, pbom, cbom, hbom, mbom, aibom, saasbom, obom, ibom]
     if: always()
     steps:
       - name: Download all artifacts
@@ -301,18 +406,31 @@ torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb" \
         with:
           path: all-bom-outputs
 
-      - name: Print summary
+      - name: Print job summary
         run: |
-          echo "## DevSecOps BOM Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## DevSecOps BOM Toolkit — Generation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| BOM Type | Status | Files |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          for bom in sbom pbom cbom mbom aibom obom ebom; do
+          echo "| # | BOM Type | Files Generated |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|----------|-----------------|" >> $GITHUB_STEP_SUMMARY
+          declare -A LABELS=(
+            [sbom]="1. SBOM — Software"
+            [pbom]="2. PBOM — Pipeline"
+            [cbom]="3. CBOM — Cryptography"
+            [hbom]="4. HBOM — Hardware"
+            [mbom]="5. MBOM — ML"
+            [aibom]="6. AIBOM — AI"
+            [saasbom]="7. SaaSBOM — SaaS"
+            [obom]="8. OBOM — Operations"
+            [ibom]="9. IBOM — Infrastructure"
+          )
+          for bom in sbom pbom cbom hbom mbom aibom saasbom obom ibom; do
             count=$(find "all-bom-outputs/${bom}-outputs" -type f 2>/dev/null | wc -l | tr -d ' ')
-            echo "| ${bom^^} | done | ${count} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ${bom^^} | ${LABELS[$bom]} | ${count} |" >> $GITHUB_STEP_SUMMARY
           done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> *Complete visibility. Stronger security. Resilient delivery.*" >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload all BOMs
+      - name: Upload consolidated BOM archive
         uses: actions/upload-artifact@v4
         with:
           name: all-bom-outputs

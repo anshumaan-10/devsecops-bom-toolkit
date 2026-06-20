@@ -10,7 +10,7 @@ PROJECT_DIR="${1:-$PWD}"
 OUTPUT_BASE="${2:-${REPO_ROOT}/output}"
 TS=$(date +%Y%m%d_%H%M%S)
 
-mkdir -p "${OUTPUT_BASE}"/{sbom,pbom,cbom,hbom,mbom,aibom,saasbom,obom,ebom}
+mkdir -p "${OUTPUT_BASE}"/{sbom,pbom,cbom,hbom,mbom,aibom,saasbom,obom,ibom}
 
 echo "========================================"
 echo " DevSecOps BOM Toolkit — All BOMs"
@@ -43,7 +43,7 @@ run_bom "mbom"
 run_bom "aibom"
 run_bom "saasbom"
 run_bom "obom"
-run_bom "ebom"
+run_bom "ibom"
 
 echo ""
 echo "========================================"
@@ -52,7 +52,7 @@ echo " Output directory: $OUTPUT_BASE"
 echo "========================================"
 echo ""
 echo " Summary:"
-for bom in sbom pbom cbom hbom mbom aibom saasbom obom ebom; do
+  for bom in sbom pbom cbom hbom mbom aibom saasbom obom ibom; do
   count=$(find "${OUTPUT_BASE}/${bom}" -type f 2>/dev/null | wc -l | tr -d ' ')
   echo "   ${bom^^}: ${count} file(s)"
 done

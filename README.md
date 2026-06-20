@@ -1,5 +1,7 @@
 # DevSecOps BOM Toolkit — Free Tools for All 9 BOM Types
 
+> *Based on: **Types of BOM in DevSecOps & Supply Chain Security** — Anshumaan Singh, DevSecOps Engineer, Zee Entertainment Enterprises Ltd.*
+
 > **Complete visibility. Stronger security. Resilient delivery.**
 
 A single reference repository demonstrating **free, open-source tools** for every Bill of Materials (BOM) type used across the DevSecOps & Supply Chain Security lifecycle.
@@ -18,7 +20,7 @@ A single reference repository demonstrating **free, open-source tools** for ever
 | 6 | [AIBOM](#6-aibom) | AI Bill of Materials | AI transparency, security, ethical AI & regulatory compliance |
 | 7 | [SaaSBOM](#7-saasbom) | SaaS Bill of Materials | Third-party risk management, data security & compliance |
 | 8 | [OBOM](#8-obom) | Operations Bill of Materials | Runtime visibility, incident response & operational resilience |
-| 9 | [EBOM](#9-ebom) | Environment Bill of Materials | Environment consistency, security and compliance |
+| 9 | [IBOM](#9-ibom) | Infrastructure Bill of Materials | Environment consistency, security and compliance |
 
 ---
 
@@ -27,7 +29,7 @@ A single reference repository demonstrating **free, open-source tools** for ever
 ```
 HBOM → SBOM → CBOM → PBOM → MBOM
                 ↓       ↓
-             AIBOM  SaaSBOM → OBOM → EBOM
+             AIBOM  SaaSBOM → OBOM → IBOM
 ```
 
 - **HBOM** — Hardware is the root foundation
@@ -38,7 +40,7 @@ HBOM → SBOM → CBOM → PBOM → MBOM
 - **AIBOM** — Extends to AI assets
 - **SaaSBOM** — Uses external SaaS services
 - **OBOM** — Runs in operations
-- **EBOM** — Across different environments
+- **IBOM** — Across different infrastructure environments
 
 ---
 
@@ -62,7 +64,7 @@ cd devsecops-bom-toolkit
 
 **Software Bill of Materials** — inventories all software components, libraries, packages and dependencies.
 
-**Examples:** OpenSSL, Log4j, Spring Boot, Nginx
+**Examples:** OpenSSL, Log4j, Spring Boot, Nginx, React, Node.js
 
 ### Free Tools
 
@@ -241,26 +243,27 @@ cd devsecops-bom-toolkit
 
 ---
 
-## 9. EBOM
+## 9. IBOM
 
-**Environment Bill of Materials** — describes the environments (Dev, Test, Staging, Prod) and their configurations, variables, secrets and policies.
+**Infrastructure Bill of Materials** — describes the infrastructure environments (Dev, Test, Staging, Prod) and their configurations, variables, secrets and policies.
 
-**Examples:** Dev/Staging/Production Environments, Environment Variables, Secrets & ConfigMaps
+**Examples:** VPC / Subnets, IAM Roles, Security Groups, Databases, Storage Buckets
 
 ### Free Tools
 
 | Tool | Description |
 |------|-------------|
 | [Checkov](https://github.com/bridgecrewio/checkov) | IaC security scanning (Terraform, Helm, K8s) |
-| [terraform-docs](https://github.com/terraform-docs/terraform-docs) | Generate environment docs from Terraform |
-| [Infracost](https://github.com/infracost/infracost) | Cloud cost estimation + resource inventory |
 | [tfsec](https://github.com/aquasecurity/tfsec) | Terraform static analysis security scanner |
-| [detect-secrets](https://github.com/Yelp/detect-secrets) | Find secrets in environment config files |
-| [Vault (HashiCorp)](https://github.com/hashicorp/vault) | Secrets management & environment security |
-| [Kubescape](https://github.com/kubescape/kubescape) | K8s environment security posture management |
-| [conftest](https://github.com/open-policy-agent/conftest) | Policy testing for environment configs (OPA) |
+| [Kubescape](https://github.com/kubescape/kubescape) | K8s infrastructure security posture management |
+| [conftest](https://github.com/open-policy-agent/conftest) | Policy testing for infrastructure configs (OPA) |
+| [terraform-docs](https://github.com/terraform-docs/terraform-docs) | Generate docs from Terraform infrastructure configs |
+| [Infracost](https://github.com/infracost/infracost) | Cloud infrastructure resource inventory + cost |
+| [Terrascan](https://github.com/tenable/terrascan) | Static code analysis for IaC |
+| [Steampipe](https://github.com/turbot/steampipe) | Query live AWS/Azure/GCP infrastructure via SQL |
+| [Prowler](https://github.com/prowler-cloud/prowler) | Cloud infrastructure security best-practice checks |
 
-📁 See [`ebom/`](./ebom/) for examples and scripts.
+📁 See [`ibom/`](./ibom/) for examples and scripts.
 
 ---
 
