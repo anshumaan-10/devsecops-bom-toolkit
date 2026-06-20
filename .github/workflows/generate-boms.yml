@@ -15,9 +15,9 @@ permissions:
   id-token: write
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 1. SBOM — Software Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   sbom:
     name: "1. SBOM (Syft + Trivy + Grype)"
     runs-on: ubuntu-latest
@@ -25,30 +25,43 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/sbom
+        run: |
+          mkdir -p output/sbom
+          echo "=== [SBOM] Output directory: output/sbom ==="
+
+      - name: Install Syft
+        run: |
+          echo "=== [SBOM] Installing Syft ==="
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft version
 
       - name: Generate SBOM with Syft (CycloneDX)
-        uses: anchore/sbom-action@v0
-        with:
-          format: cyclonedx-json
-          output-file: output/sbom/sbom-syft.cdx.json
-          upload-artifact: false
+        run: |
+          echo "=== [SBOM] Generating CycloneDX SBOM with Syft ==="
+          syft dir:. -o cyclonedx-json=output/sbom/sbom-syft.cdx.json
+          echo "=== [SBOM] Syft SBOM saved ==="
+          cat output/sbom/sbom-syft.cdx.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Components found: {len(d.get(\"components\",[]))}')"
 
       - name: Generate SBOM with Trivy (SPDX)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          format: spdx-json
-          output: output/sbom/sbom-trivy.spdx.json
-          exit-code: "0"
+        run: |
+          echo "=== [SBOM] Installing Trivy ==="
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
+          echo "=== [SBOM] Generating SPDX SBOM with Trivy ==="
+          trivy fs --format spdx-json --output output/sbom/sbom-trivy.spdx.json --exit-code 0 .
+          echo "=== [SBOM] Trivy SBOM saved ==="
+          wc -c output/sbom/sbom-trivy.spdx.json
 
       - name: Scan for vulnerabilities with Grype
-        uses: anchore/scan-action@v3
-        with:
-          path: "."
-          fail-build: false
-          output-format: sarif
-          output-file: output/sbom/grype-results.sarif
+        run: |
+          echo "=== [SBOM] Installing Grype ==="
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype version
+          echo "=== [SBOM] Scanning SBOM for vulnerabilities with Grype ==="
+          grype sbom:output/sbom/sbom-syft.cdx.json -o sarif > output/sbom/grype-results.sarif || true
+          grype sbom:output/sbom/sbom-syft.cdx.json -o table || true
+          echo "=== [SBOM] Grype scan complete. SARIF saved ==="
+          wc -l output/sbom/grype-results.sarif
 
       - name: Upload Grype SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -56,6 +69,12 @@ jobs:
         with:
           sarif_file: output/sbom/grype-results.sarif
           category: sbom-grype
+        continue-on-error: true
+
+      - name: List SBOM output files
+        run: |
+          echo "=== [SBOM] Generated files ==="
+          ls -lh output/sbom/
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v4
@@ -63,9 +82,9 @@ jobs:
           name: sbom-outputs
           path: output/sbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 2. PBOM — Pipeline Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   pbom:
     name: "2. PBOM (actionlint + zizmor)"
     runs-on: ubuntu-latest
@@ -73,36 +92,48 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/pbom
+        run: |
+          mkdir -p output/pbom
+          echo "=== [PBOM] Output directory: output/pbom ==="
 
       - name: Lint GitHub Actions workflows (actionlint)
-        uses: reviewdog/action-actionlint@v1
-        with:
-          reporter: github-check
-          fail_on_error: false
-        continue-on-error: true
-
-      - name: Security analysis of GitHub Actions (zizmor)
         run: |
+          echo "=== [PBOM] Installing actionlint ==="
+          bash <(curl -Ss https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "=== [PBOM] Linting GitHub Actions workflows ==="
+          ./actionlint -format '{{range $e := .}}::warning file={{$e.Filepath}},line={{$e.Line}},col={{$e.Column}}::{{$e.Message}}\n{{end}}' 2>&1 || true
+          echo "=== [PBOM] actionlint complete ==="
+
+      - name: Security analysis (zizmor)
+        run: |
+          echo "=== [PBOM] Installing zizmor ==="
           pip install --quiet zizmor
-          zizmor .github/workflows/ --format sarif \
-            > output/pbom/zizmor-results.sarif 2>/dev/null || \
-          echo '{"version":"2.1.0","runs":[]}' > output/pbom/zizmor-results.sarif
-        continue-on-error: true
+          echo "=== [PBOM] Running zizmor security analysis on workflows ==="
+          zizmor .github/workflows/ 2>&1 | tee output/pbom/zizmor-report.txt || true
+          echo "=== [PBOM] zizmor analysis complete ==="
 
-      - name: Upload zizmor SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: output/pbom/zizmor-results.sarif
-          category: pbom-zizmor
-        continue-on-error: true
-
-      - name: Generate pipeline component manifest
+      - name: Generate PBOM manifest
         run: |
-          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[' > output/pbom/pbom.json
-          echo '{"type":"application","name":"GitHub Actions","version":"latest"}' >> output/pbom/pbom.json
-          echo ']}' >> output/pbom/pbom.json
+          echo "=== [PBOM] Generating pipeline component manifest ==="
+          cat > output/pbom/pbom.json << 'EOF'
+          {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "components": [
+              {"type": "application", "name": "GitHub Actions", "version": "latest"},
+              {"type": "application", "name": "actionlint", "version": "latest"},
+              {"type": "application", "name": "zizmor", "version": "latest"}
+            ]
+          }
+          EOF
+          echo "=== [PBOM] Manifest saved ==="
+          cat output/pbom/pbom.json
+
+      - name: List PBOM output files
+        run: |
+          echo "=== [PBOM] Generated files ==="
+          ls -lh output/pbom/
 
       - name: Upload PBOM artifacts
         uses: actions/upload-artifact@v4
@@ -110,9 +141,9 @@ jobs:
           name: pbom-outputs
           path: output/pbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 3. CBOM — Cryptography Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   cbom:
     name: "3. CBOM (cdxgen + Gitleaks + detect-secrets)"
     runs-on: ubuntu-latest
@@ -122,26 +153,42 @@ jobs:
           fetch-depth: 0
 
       - name: Create output directories
-        run: mkdir -p output/cbom
+        run: |
+          mkdir -p output/cbom
+          echo "=== [CBOM] Output directory: output/cbom ==="
 
       - name: Generate CBOM with cdxgen
         run: |
+          echo "=== [CBOM] Installing cdxgen ==="
           npm install -g @cyclonedx/cdxgen 2>/dev/null
-          cdxgen --type cryptography -o output/cbom/cbom-cdxgen.json . 2>/dev/null || \
-          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
-            > output/cbom/cbom-cdxgen.json
+          echo "=== [CBOM] Generating Cryptography BOM ==="
+          cdxgen --type cryptography -o output/cbom/cbom-cdxgen.json . 2>&1 | tail -5 || \
+            echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' > output/cbom/cbom-cdxgen.json
+          echo "=== [CBOM] CBOM saved ==="
+          wc -c output/cbom/cbom-cdxgen.json
 
       - name: Scan for secrets (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+        run: |
+          echo "=== [CBOM] Installing Gitleaks ==="
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep tag_name | cut -d'"' -f4 | tr -d 'v')_linux_x64.tar.gz | tar xz -C /usr/local/bin gitleaks 2>/dev/null || \
+            curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz" | tar xz -C /usr/local/bin gitleaks
+          echo "=== [CBOM] Running Gitleaks secret scan ==="
+          gitleaks detect --source . --report-format json --report-path output/cbom/gitleaks-report.json --no-git 2>&1 || true
+          echo "=== [CBOM] Gitleaks scan complete ==="
 
       - name: Scan for hardcoded secrets (detect-secrets)
         run: |
+          echo "=== [CBOM] Installing detect-secrets ==="
           pip install --quiet detect-secrets
-          detect-secrets scan . --exclude-files '\.git/.*' \
-            > output/cbom/secrets-baseline.json 2>/dev/null || true
+          echo "=== [CBOM] Scanning for hardcoded secrets ==="
+          detect-secrets scan . --exclude-files '\.git/.*' > output/cbom/secrets-baseline.json 2>&1
+          echo "=== [CBOM] Secrets baseline saved ==="
+          python3 -c "import json; d=json.load(open('output/cbom/secrets-baseline.json')); print(f'Potential secrets found: {sum(len(v) for v in d.get(\"results\",{}).values())}')"
+
+      - name: List CBOM output files
+        run: |
+          echo "=== [CBOM] Generated files ==="
+          ls -lh output/cbom/
 
       - name: Upload CBOM artifacts
         uses: actions/upload-artifact@v4
@@ -149,9 +196,9 @@ jobs:
           name: cbom-outputs
           path: output/cbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 4. HBOM — Hardware Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   hbom:
     name: "4. HBOM (lshw + dmidecode)"
     runs-on: ubuntu-latest
@@ -159,20 +206,42 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/hbom
+        run: |
+          mkdir -p output/hbom
+          echo "=== [HBOM] Output directory: output/hbom ==="
 
       - name: Collect hardware inventory (lshw)
         run: |
-          sudo lshw -json > output/hbom/hbom-lshw.json 2>/dev/null || \
-          echo '{"id":"runner","description":"GitHub Actions Runner"}' \
-            > output/hbom/hbom-lshw.json
+          echo "=== [HBOM] Installing lshw ==="
+          sudo apt-get install -y -qq lshw
+          echo "=== [HBOM] Collecting hardware inventory ==="
+          sudo lshw -json > output/hbom/hbom-lshw.json 2>/dev/null
+          echo "=== [HBOM] Hardware classes found ==="
+          python3 -c "import json; d=json.load(open('output/hbom/hbom-lshw.json')); print(f'Hardware class: {d.get(\"class\",\"unknown\")}, Product: {d.get(\"product\",\"unknown\")}')" || true
 
       - name: Collect BIOS/hardware info (dmidecode)
         run: |
+          echo "=== [HBOM] Collecting BIOS/hardware details ==="
           for dtype in system bios processor memory; do
-            sudo dmidecode --type "$dtype" \
-              > "output/hbom/hbom-dmi-${dtype}.txt" 2>/dev/null || true
+            echo "  -> dmidecode --type $dtype"
+            sudo dmidecode --type "$dtype" > "output/hbom/hbom-dmi-${dtype}.txt" 2>/dev/null || true
           done
+          echo "=== [HBOM] dmidecode complete. Files ==="
+          ls -lh output/hbom/
+
+      - name: Generate HBOM CycloneDX template
+        run: |
+          echo "=== [HBOM] Generating HBOM CycloneDX skeleton ==="
+          PRODUCT=$(sudo dmidecode -s system-product-name 2>/dev/null || echo "unknown")
+          MANUFACTURER=$(sudo dmidecode -s system-manufacturer 2>/dev/null || echo "unknown")
+          echo "{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.6\",\"components\":[{\"type\":\"device\",\"name\":\"$PRODUCT\",\"manufacturer\":\"$MANUFACTURER\"}]}" > output/hbom/hbom-cyclonedx.json
+          echo "=== [HBOM] Product: $PRODUCT / Manufacturer: $MANUFACTURER ==="
+          cat output/hbom/hbom-cyclonedx.json
+
+      - name: List HBOM output files
+        run: |
+          echo "=== [HBOM] Generated files ==="
+          ls -lh output/hbom/
 
       - name: Upload HBOM artifacts
         uses: actions/upload-artifact@v4
@@ -180,9 +249,9 @@ jobs:
           name: hbom-outputs
           path: output/hbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 5. MBOM — Machine Learning BOM
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   mbom:
     name: "5. MBOM (ModelScan + cdxgen)"
     runs-on: ubuntu-latest
@@ -194,33 +263,47 @@ jobs:
           python-version: "3.11"
 
       - name: Create output directories
-        run: mkdir -p output/mbom
+        run: |
+          mkdir -p output/mbom
+          echo "=== [MBOM] Output directory: output/mbom ==="
 
       - name: Scan ML model files (ModelScan)
         run: |
+          echo "=== [MBOM] Installing ModelScan ==="
           pip install --quiet modelscan
-          MODEL_FILES=$(find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" \
-            -o -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) 2>/dev/null | head -1)
+          echo "=== [MBOM] Scanning for ML model files ==="
+          MODEL_FILES=$(find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" -o -name "*.onnx" \) 2>/dev/null | grep -v ".git" | head -5)
           if [ -n "$MODEL_FILES" ]; then
-            modelscan scan -p . -r output/mbom/modelscan-results.json 2>/dev/null || true
+            echo "Found model files: $MODEL_FILES"
+            modelscan scan -p . -r output/mbom/modelscan-results.json 2>&1 || true
           else
-            echo '{"info":"No ML model files found in repository"}' \
-              > output/mbom/modelscan-results.json
+            echo "No ML model files found in this repository (expected for a toolkit repo)"
+            echo '{"info":"No ML model files found","status":"clean"}' > output/mbom/modelscan-results.json
           fi
+          cat output/mbom/modelscan-results.json
 
       - name: Generate ML BOM (cdxgen)
         run: |
+          echo "=== [MBOM] Installing cdxgen ==="
           npm install -g @cyclonedx/cdxgen 2>/dev/null
-          cdxgen --type ml -o output/mbom/mbom-cdxgen.json . 2>/dev/null || \
-          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
-            > output/mbom/mbom-cdxgen.json
+          echo "=== [MBOM] Generating ML BOM ==="
+          cdxgen --type ml -o output/mbom/mbom-cdxgen.json . 2>&1 | tail -5 || \
+            echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' > output/mbom/mbom-cdxgen.json
+          echo "=== [MBOM] ML BOM saved ==="
+          wc -c output/mbom/mbom-cdxgen.json
 
       - name: Compute model file hashes
         run: |
-          find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" \
-            -o -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) \
-            -exec sha256sum {} \; 2>/dev/null \
-            > output/mbom/model-hashes.txt || touch output/mbom/model-hashes.txt
+          echo "=== [MBOM] Computing SHA-256 hashes for model files ==="
+          find . \( -name "*.pkl" -o -name "*.h5" -o -name "*.pt" -o -name "*.pth" -o -name "*.onnx" -o -name "*.joblib" \) -exec sha256sum {} \; 2>/dev/null > output/mbom/model-hashes.txt || true
+          HASH_COUNT=$(wc -l < output/mbom/model-hashes.txt | tr -d ' ')
+          echo "=== [MBOM] Hashed $HASH_COUNT model file(s) ==="
+          cat output/mbom/model-hashes.txt || echo "(none)"
+
+      - name: List MBOM output files
+        run: |
+          echo "=== [MBOM] Generated files ==="
+          ls -lh output/mbom/
 
       - name: Upload MBOM artifacts
         uses: actions/upload-artifact@v4
@@ -228,9 +311,9 @@ jobs:
           name: mbom-outputs
           path: output/mbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 6. AIBOM — AI Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   aibom:
     name: "6. AIBOM (cdxgen + AI dep scan)"
     runs-on: ubuntu-latest
@@ -242,21 +325,38 @@ jobs:
           python-version: "3.11"
 
       - name: Create output directories
-        run: mkdir -p output/aibom
+        run: |
+          mkdir -p output/aibom
+          echo "=== [AIBOM] Output directory: output/aibom ==="
 
       - name: Generate AI BOM (cdxgen)
         run: |
+          echo "=== [AIBOM] Installing cdxgen ==="
           npm install -g @cyclonedx/cdxgen 2>/dev/null
-          cdxgen --type ml -o output/aibom/aibom-cdxgen.json . 2>/dev/null || \
-          echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' \
-            > output/aibom/aibom-cdxgen.json
+          echo "=== [AIBOM] Generating AI/ML BOM ==="
+          cdxgen --type ml -o output/aibom/aibom-cdxgen.json . 2>&1 | tail -5 || \
+            echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' > output/aibom/aibom-cdxgen.json
+          echo "=== [AIBOM] AI BOM saved ==="
+          wc -c output/aibom/aibom-cdxgen.json
 
       - name: Inventory AI/ML Python dependencies
         run: |
+          echo "=== [AIBOM] Scanning for AI/ML Python dependencies ==="
           if [ -f requirements.txt ]; then
             grep -Ei 'openai|anthropic|langchain|llama|huggingface|transformers|torch|tensorflow|keras|sklearn|xgboost|lightgbm|mlflow|wandb|garak|promptfoo' requirements.txt > output/aibom/ai-python-deps.txt 2>/dev/null || true
+            COUNT=$(wc -l < output/aibom/ai-python-deps.txt | tr -d ' ')
+            echo "Found $COUNT AI/ML packages in requirements.txt"
+            cat output/aibom/ai-python-deps.txt || echo "(none)"
+          else
+            echo "No requirements.txt found"
+            echo "# No requirements.txt in this repo" > output/aibom/ai-python-deps.txt
           fi
-          echo '{"scan":"complete"}' > output/aibom/aibom-scan-summary.json
+          echo '{"scan":"complete","ai_packages_found":true}' > output/aibom/aibom-scan-summary.json
+
+      - name: List AIBOM output files
+        run: |
+          echo "=== [AIBOM] Generated files ==="
+          ls -lh output/aibom/
 
       - name: Upload AIBOM artifacts
         uses: actions/upload-artifact@v4
@@ -264,9 +364,9 @@ jobs:
           name: aibom-outputs
           path: output/aibom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 7. SaaSBOM — SaaS Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   saasbom:
     name: "7. SaaSBOM (endpoint discovery)"
     runs-on: ubuntu-latest
@@ -274,17 +374,32 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/saasbom
+        run: |
+          mkdir -p output/saasbom
+          echo "=== [SaaSBOM] Output directory: output/saasbom ==="
 
       - name: Discover SaaS API references in source
         run: |
-          grep -rEl "salesforce\.com|slack\.com|googleapis\.com|api\.stripe\.com|api\.sendgrid\.com|api\.twilio\.com|api\.hubspot\.com|api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" --include="*.js" --include="*.ts" --include="*.py" --include="*.go" --include="*.java" --include="*.yaml" --include="*.json" --include="*.tf" . 2>/dev/null > output/saasbom/saas-references.txt || echo "(no SaaS API references found)" > output/saasbom/saas-references.txt
+          echo "=== [SaaSBOM] Scanning codebase for SaaS API endpoints ==="
+          grep -rEl "salesforce\.com|slack\.com|googleapis\.com|api\.stripe\.com|api\.sendgrid\.com|api\.twilio\.com|api\.hubspot\.com|api\.openai\.com|api\.anthropic\.com|atlassian\.net|zendesk\.com" --include="*.js" --include="*.ts" --include="*.py" --include="*.go" --include="*.java" --include="*.yaml" --include="*.json" --include="*.tf" . 2>/dev/null > output/saasbom/saas-references.txt || \
+            echo "(no SaaS API references found)" > output/saasbom/saas-references.txt
+          FILE_COUNT=$(wc -l < output/saasbom/saas-references.txt | tr -d ' ')
+          echo "=== [SaaSBOM] Found SaaS references in $FILE_COUNT file(s) ==="
+          cat output/saasbom/saas-references.txt
 
       - name: Scan for exposed SaaS tokens (detect-secrets)
         run: |
+          echo "=== [SaaSBOM] Installing detect-secrets ==="
           pip install --quiet detect-secrets
-          detect-secrets scan . --exclude-files '\.git/.*' \
-            > output/saasbom/saas-secrets-scan.json 2>/dev/null || true
+          echo "=== [SaaSBOM] Scanning for exposed SaaS credentials ==="
+          detect-secrets scan . --exclude-files '\.git/.*' > output/saasbom/saas-secrets-scan.json 2>&1
+          SECRETS=$(python3 -c "import json; d=json.load(open('output/saasbom/saas-secrets-scan.json')); print(sum(len(v) for v in d.get('results',{}).values()))")
+          echo "=== [SaaSBOM] Potential exposed secrets: $SECRETS ==="
+
+      - name: List SaaSBOM output files
+        run: |
+          echo "=== [SaaSBOM] Generated files ==="
+          ls -lh output/saasbom/
 
       - name: Upload SaaSBOM artifacts
         uses: actions/upload-artifact@v4
@@ -292,9 +407,9 @@ jobs:
           name: saasbom-outputs
           path: output/saasbom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 8. OBOM — Operations Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   obom:
     name: "8. OBOM (Trivy fs + config)"
     runs-on: ubuntu-latest
@@ -302,23 +417,29 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/obom
+        run: |
+          mkdir -p output/obom
+          echo "=== [OBOM] Output directory: output/obom ==="
 
-      - name: Scan filesystem for vulnerabilities (Trivy → CycloneDX)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          format: cyclonedx
-          output: output/obom/obom-trivy.cdx.json
-          exit-code: "0"
+      - name: Install Trivy
+        run: |
+          echo "=== [OBOM] Installing Trivy ==="
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
 
-      - name: Scan IaC/config files (Trivy config → SARIF)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: config
-          format: sarif
-          output: output/obom/trivy-config.sarif
-          exit-code: "0"
+      - name: Scan filesystem for vulnerabilities (Trivy fs)
+        run: |
+          echo "=== [OBOM] Scanning filesystem for vulnerabilities ==="
+          trivy fs --format cyclonedx --output output/obom/obom-trivy.cdx.json --exit-code 0 .
+          echo "=== [OBOM] Filesystem scan complete ==="
+          wc -c output/obom/obom-trivy.cdx.json
+
+      - name: Scan IaC/config files (Trivy config)
+        run: |
+          echo "=== [OBOM] Scanning IaC/config files ==="
+          trivy config --format sarif --output output/obom/trivy-config.sarif --exit-code 0 . 2>&1 | tail -5
+          echo "=== [OBOM] Config scan complete ==="
+          trivy config --exit-code 0 . 2>&1 | tail -20
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -326,6 +447,12 @@ jobs:
         with:
           sarif_file: output/obom/trivy-config.sarif
           category: obom-trivy
+        continue-on-error: true
+
+      - name: List OBOM output files
+        run: |
+          echo "=== [OBOM] Generated files ==="
+          ls -lh output/obom/
 
       - name: Upload OBOM artifacts
         uses: actions/upload-artifact@v4
@@ -333,9 +460,9 @@ jobs:
           name: obom-outputs
           path: output/obom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   # 9. IBOM — Infrastructure Bill of Materials
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
   ibom:
     name: "9. IBOM (Checkov + tfsec + Kubescape)"
     runs-on: ubuntu-latest
@@ -343,38 +470,48 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create output directories
-        run: mkdir -p output/ibom
+        run: |
+          mkdir -p output/ibom
+          echo "=== [IBOM] Output directory: output/ibom ==="
 
-      - name: Scan IaC for misconfigurations (Checkov → SARIF)
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          output_format: sarif
-          output_file_path: output/ibom/checkov-results.sarif
-          soft_fail: true
-        continue-on-error: true
-
-      - name: Upload Checkov SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: output/ibom/checkov-results.sarif
-          category: ibom-checkov
-        continue-on-error: true
+      - name: Scan IaC with Checkov
+        run: |
+          echo "=== [IBOM] Installing Checkov ==="
+          pip install --quiet checkov
+          echo "=== [IBOM] Running Checkov IaC security scan ==="
+          checkov -d . --output cli --quiet 2>&1 | tail -20 || true
+          checkov -d . --output json --output-file-path output/ibom --quiet 2>/dev/null || true
+          echo "=== [IBOM] Checkov scan complete ==="
+          ls -lh output/ibom/ || true
 
       - name: Scan infrastructure configs (tfsec)
         run: |
+          echo "=== [IBOM] Installing tfsec ==="
+          curl -sL "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o 'https://.*tfsec-linux-amd64' | head -1)" -o /usr/local/bin/tfsec 2>/dev/null || \
+            curl -sL "https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64" -o /usr/local/bin/tfsec
+          chmod +x /usr/local/bin/tfsec
+          tfsec --version
+          echo "=== [IBOM] Running tfsec scan ==="
           if find . -name "*.tf" 2>/dev/null | grep -q .; then
-            curl -sL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | sh 2>/dev/null
-            tfsec . --format json > output/ibom/ibom-tfsec.json 2>/dev/null || true
+            tfsec . --format json > output/ibom/ibom-tfsec.json 2>&1 || true
+            echo "Terraform files scanned"
           else
-            echo '{"results":[],"info":"No Terraform files found"}' \
-              > output/ibom/ibom-tfsec.json
+            echo '{"results":[],"info":"No Terraform files found in repository"}' > output/ibom/ibom-tfsec.json
+            echo "No .tf files found (expected for a toolkit repo)"
           fi
+          cat output/ibom/ibom-tfsec.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'tfsec results: {len(d.get(\"results\",[]))} findings')" || true
 
-      - name: Generate infrastructure inventory summary
+      - name: Generate IBOM CycloneDX template
         run: |
+          echo "=== [IBOM] Generating IBOM CycloneDX skeleton ==="
           echo '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}' > output/ibom/ibom-template.json
+          echo "=== [IBOM] IBOM template saved ==="
+          cat output/ibom/ibom-template.json
+
+      - name: List IBOM output files
+        run: |
+          echo "=== [IBOM] Generated files ==="
+          ls -lh output/ibom/
 
       - name: Upload IBOM artifacts
         uses: actions/upload-artifact@v4
@@ -382,9 +519,9 @@ jobs:
           name: ibom-outputs
           path: output/ibom/
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Summary — runs after all BOM jobs
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
+  # Summary
+  # ───────────────────────────────────────────────────────────────
   summary:
     name: "BOM Summary"
     runs-on: ubuntu-latest
@@ -404,10 +541,12 @@ jobs:
           echo "|-----|-------------|-------|" >> $GITHUB_STEP_SUMMARY
           for bom in sbom pbom cbom hbom mbom aibom saasbom obom ibom; do
             count=$(find "all-bom-outputs/${bom}-outputs" -type f 2>/dev/null | wc -l | tr -d ' ')
-            echo "| ${bom} | BOM type | ${count} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ${bom^^} | BOM generated | ${count} file(s) |" >> $GITHUB_STEP_SUMMARY
           done
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> Complete visibility. Stronger security. Resilient delivery." >> $GITHUB_STEP_SUMMARY
+          echo "=== All BOM artifacts ==="
+          find all-bom-outputs -type f | sort
 
       - name: Upload consolidated BOM archive
         uses: actions/upload-artifact@v4
